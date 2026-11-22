@@ -1,0 +1,21 @@
+Pulse Launcher — Source-Available License
+Copyright (c) 2026 Pulse
+
+This source code is published publicly for TRANSPARENCY and SECURITY REVIEW,
+so that users can read and verify exactly what the Pulse launcher does before
+running it.
+
+You MAY:
+  - Read, review, and audit this source code.
+
+You MAY NOT, without prior written permission from the copyright holder:
+  - Copy, modify, fork, or redistribute this code or any part of it;
+  - Use this code, in whole or in part, to build or operate another launcher
+    or service;
+  - Sell, sublicense, or distribute this code or derivative works.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY ARISING FROM THE USE OF THIS SOFTWARE.

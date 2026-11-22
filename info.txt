@@ -1,0 +1,64 @@
+Análisis del launcher "Pulse" (Fortnite private server)
+1. Stack tecnológico
+Shell nativo: Tauri 2 (Rust) — C:\Users\Cris\Documents\OGFN\Cosas\Launcher\Pulse\src-tauri\Cargo.toml, tauri.conf.json. Ventana decorations: false (frame custom), 1440×900, bundle MSI, y requested-execution-level = "requireAdministrator" en Cargo.toml.
+Frontend: React 19 + TypeScript + Vite 7 + Tailwind CSS 4 (@tailwindcss/vite). Gestor de paquetes: Bun.
+Librerías UI/estado: Zustand 5 (con middleware persist), react-router-dom 7, framer-motion, lucide-react, react-hot-toast, recharts.
+Crates Rust clave: reqwest (blocking), winapi + windows (inyección, ShellExecute), sysinfo, zip/unrar, serde.
+2. Estructura principal
+
+text
+Pulse/
+├─ src/                     # Frontend React
+│  ├─ app/app.tsx           # Router + gating de sesión
+│  ├─ app/pages/            # auth, home, library, shop, status, leaderboard, settings
+│  ├─ app/components/       # frame, sidebar, GalaxyBackground, Updater, toaster, ui/, library/, settings/, shop/
+│  ├─ stores/               # user, settings, library, profile, leaderboard (zustand+persist)
+│  ├─ hooks/                # useAuth, useShopItems, useTheme
+│  ├─ lib/api.ts            # Cliente HTTP del backend (todos los endpoints)
+│  ├─ util/config.ts        # Config estática compilada (URL backend, versión, DLL redirect)
+│  └─ util/build/           # launch.ts, import.ts, verify.ts, close.ts, filesConfig.ts
+└─ src-tauri/src/
+   ├─ lib.rs                # Registro de comandos Tauri
+   ├─ modules/game.rs       # Lanzamiento, paks, Arc, verify (~1060 líneas, el corazón)
+   ├─ modules/updater.rs    # Auto-update vía MSI
+   ├─ modules/download.rs   # Descarga de builds (zip/rar) resumible/cancelable
+   ├─ modules/settings.rs   # set_always_on_top
+   └─ utilities.rs          # inject_dll, kill_all_procs, download_file
+3. Inicio de sesión
+Discord OAuth con polling, sin backend local. En src\app\pages\auth.tsx: abre el navegador a GET {backend}/api/coral/auth/discord?state=<uuid> y hace polling cada 1.5 s (timeout 5 min) a GET /api/coral/auth/discord/session?state=, que devuelve {status:"ok", account_id, access_token, displayName}.
+Sesión persistida en zustand-persist clave "storage:user" (src\stores\user.ts) — guarda accessToken en localStorage en claro (el campo password existe pero es null bajo Discord auth).
+Backend externo: BACKEND_URL = "http://pulsefn.de:2603" en src\util\config.ts (dev: http://127.0.0.1:3551, ver src\lib\api.ts). Mezcla endpoints estilo API de Fortnite emulados (/account/api/oauth/token, /fortnite/api/game/v2/profile/..., /fortnite/api/storefront/v2/catalog, /fortnite/api/statsv2/leaderboards/...) con endpoints propios (/api/coral/auth/*, /api/coral/gameserver/list, /api/exlo/leaderboard/hype, /api/launcher/{news,version,paks,mobile-paks,arc}).
+4. Lanzamiento del juego
+Flujo en src\util\build\launch.ts → comando Tauri launch_game en src-tauri\src\modules\game.rs (corre en spawn_blocking):
+
+Kill de procesos: kill_all_procs() (utilities.rs) escribe un .bat con taskkill /F (EpicGamesLauncher, Fortnite*, EAC...) y lo ejecuta con runas.
+Exchange code: GET /api/coral/auth/exchange con Bearer accessToken → código de un solo uso. No hay password: el juego autentica con -AUTH_TYPE=exchangecode, y Arc verifica el código contra POST /api/coral/arc/verify del backend. No usa puerto local para auth.
+Archivos gestionados (ensure_launcher_managed_files):
+Redirect DLL: descarga Tellurium.dll (URL hardcodeada en src\util\config.ts) y la coloca suplantando Engine\Binaries\ThirdParty\NVIDIA\NVaftermath\Win64\GFSDK_Aftermath_Lib.x64.dll (DLL que Fortnite carga por sí solo; no requiere inyección). Si la URL es la de Tellurium, añade -backend=<host>.
+Arc anticheat: GET /api/launcher/arc → {clientId, exeUrl} (rotable server-side); descarga Arc.exe a <build>\Arc\ y escribe Arc\Config.json con ClientID + ruta del exe shipping.
+Paks: manifiesto GET /api/launcher/paks (+ paks "Mobile Builds" opcionales de /api/launcher/mobile-paks); descarga resumible con HTTP Range, archivo .part, verificación por tamaño, 40 reintentos (download_pak_resumable).
+Argumentos de Fortnite (game.rs:653): -epicapp=Fortnite -epicenv=Prod -epiclocale=en-us -epicportal -nobe -fromfl=eac -nocodeguards -nouac -fltoken=3db3ba5dcbd2e16703f3978d -caldera=<JWT> -skippatchcheck -AUTH_TYPE=exchangecode -AUTH_LOGIN=<accountId> -AUTH_PASSWORD=<exchangeCode> -useallavailablecores -steamimportavailable, más -eor/-dpe/-ror (toggles de edit-on-release) y -t= solo si hay arcToken (ya no se usa).
+El token -caldera lo genera make_caldera_token (game.rs:135): JWT sin firmar (alg:none) con account_id y un calderaGuid estático — fallback para que el gameserver extraiga el account_id.
+Ejecución: lanza Arc.exe con ShellExecuteExA verbo "runas" (elevado); Arc es quien envuelve/arranca el juego con anticheat. Después lanza FortniteClient-Win64-Shipping_BE.exe y FortniteLauncher.exe con CREATE_SUSPENDED|CREATE_NO_WINDOW, espera 5 s.
+Inyección de DLLs extra (opcional, inject_extra_dlls): descarga DLLs a FortniteGame\Binaries\Win64\ y las inyecta en el PID de Arc vía inject_dll (src-tauri\src\utilities.rs:171) — técnica clásica VirtualAllocEx + WriteProcessMemory + CreateRemoteThread sobre LoadLibraryA.
+5. Configuración persistente
+localStorage vía zustand persist: "storage:user" (sesión), "settings" (src\stores\settings.ts: theme, minimizeOnLaunch, alwaysOnTop, mobileBuilds, editOnRelease, disablePreEdits, resetOnRelease, reduceMotion), y "storage:library" (src\stores\library.ts: builds importadas serializadas a mano en un Map).
+Config compilada (no editable en runtime): src\util\config.ts — backend, versión esperada (10.40), ALLOW_ALL_VERSIONS, REDIRECT_DOWNLOAD, flags opcionales de paks/DLLs.
+6. Pantallas y flujo de usuario
+src\app\app.tsx: si no hay sesión válida → solo pantalla Login (Discord); si la hay → Sidebar + rutas: / Home (news), /library (builds importadas + lanzar/verificar), /shop, /status (servidores), /leaderboard (Arena Hype), /settings (tabs Appearance/Options/Information). El flujo de build es: Import (import.ts: elige carpeta, detecta versión escaneando bytes UTF-16 del exe con locate_version) → Library → Play (progreso por eventos Tauri download-progress/verify-build) → ejecución. Además: overlay de auto-update (Updater.tsx) que compara /api/launcher/version con getVersion() y descarga un MSI instalándolo con un .bat (msiexec /passive + relanzar, updater.rs), frame de ventana custom con drag (frame.tsx), toasts y fondo animado GalaxyBackground.
+
+7. Componentes UI reutilizables
+src\app\components\ui\Button.tsx
+settings\ToggleOption.tsx, settings\DropdownOption.tsx, settings\OptionGroup.tsx
+library\BuildCard.tsx, library\BuildGrid.tsx, library\EmptyState.tsx
+shop\BigFeaturedCard.tsx, shop\DailyGrid.tsx, shop\FeaturedRow.tsx, shop\SmallShopCard.tsx
+toaster.tsx, GalaxyBackground.tsx, sidebar.tsx, frame.tsx, Updater.tsx
+hooks\useTheme.ts + util\color.ts (themeAlpha/hexToRgba) — sistema de theming con acentos.
+8. Backend Rust/Tauri — comandos invoke
+Registrados en src-tauri\src\lib.rs:167: check_file_exists, file_exists, delete_file, get_directory_size, locate_version, is_fn_running, launch_game, close_game, verify_build_files, download_and_install_update, set_always_on_top, download_build, cancel_download. Eventos emitidos al frontend: download-progress, verify-build, update-progress, download-error. Detalles notables:
+
+verify_build_files (game.rs:915): "reparación" — borra solo archivos gestionados por el launcher (redirect DLL, carpeta Arc, paks del manifiesto, DLLs extra) y los re-descarga por la misma ruta que launch_game.
+locate_version (lib.rs:72): firma binaria ++Fortnite+Release en UTF-16 dentro del exe para detectar la versión (mapeo de changelists en import.ts VERSION_MAP).
+download.rs: descarga de builds completas (zip/rar) resumible con token de cancelación global.
+Permisos amplios en src-tauri\capabilities\default.json (fs read/write en *, shell, opener, deep-link, devtools).
+Observación menor: en src\app\app.tsx:31 hay un useEffect después de un return condicional (orden de hooks inestable cuando !auth.hydrated) — funciona por el gating actual pero es frágil.
